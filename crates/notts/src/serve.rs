@@ -204,12 +204,22 @@ fn bind_unix(p: &Path) -> Result<UnixListener, String> {
         // a stale socket from a crashed run: ours to replace
         std::fs::remove_file(p).map_err(|e| format!("cannot replace stale socket {} ({:?})", p.display(), e.kind()))?;
     }
-    // SAFETY: umask(2) only changes this process's file creation mask.
-    let old = unsafe { libc::umask(0o177) };
-    let l = UnixListener::bind(p);
-    unsafe { libc::umask(old) };
-    let l = l.map_err(|e| format!("cannot bind {} ({:?})", p.display(), e.kind()))?;
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("cannot chmod socket ({:?})", e.kind()))?;
+    // Bind inside a private (mode 700) directory, tighten the socket, then rename it into place:
+    // nobody else can reach it at any moment, and no process-wide umask is touched.
+    let parent = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let stage = parent.join(format!(".notts-sock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stage);
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&stage).map_err(|e| format!("cannot create {} ({:?})", stage.display(), e.kind()))?;
+    }
+    let tmp = stage.join("s");
+    let bound = UnixListener::bind(&tmp)
+        .map_err(|e| format!("cannot bind {} ({:?})", p.display(), e.kind()))
+        .and_then(|l| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map(|_| l).map_err(|e| format!("cannot chmod socket ({:?})", e.kind())))
+        .and_then(|l| std::fs::rename(&tmp, p).map(|_| l).map_err(|e| format!("cannot move socket to {} ({:?})", p.display(), e.kind())));
+    let _ = std::fs::remove_dir_all(&stage);
+    let l = bound?;
     l.set_nonblocking(true).map_err(|e| format!("{:?}", e.kind()))?;
     Ok(l)
 }
