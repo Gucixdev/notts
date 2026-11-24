@@ -252,7 +252,12 @@ fn attachments_by_base64_anywhere_and_by_path_only_on_the_unix_socket() {
     let n = Arc::new(notts(&conf(&mock), &dir, clock()));
     let sock = dir.join("s.sock");
     let token = Secret::new("t0k");
-    let srv = Server::start(n.clone(), ServeOpts { socket: Some(sock.clone()), listen: Some("127.0.0.1:0".into()), token: Some(token), rate_per_min: 0, ..ServeOpts::default() }, Arc::new(AtomicBool::new(false))).unwrap();
+    let srv = Server::start(
+        n.clone(),
+        ServeOpts { socket: Some(sock.clone()), listen: Some("127.0.0.1:0".into()), token: Some(token), rate_per_min: 0, ..ServeOpts::default() },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
     let a = srv.tcp_addr().unwrap();
     let file = dir.join("raport.md");
     std::fs::write(&file, "# raport\n").unwrap();
@@ -275,7 +280,7 @@ fn attachments_by_base64_anywhere_and_by_path_only_on_the_unix_socket() {
         r#"{"title":"t","attachments":[{"base64":"QQ=="}]}"#.to_string(),
         r#"{"title":"t","attachments":[{"name":"x","base64":"!!!"}]}"#.to_string(),
         r#"{"title":"t","attachments":"nope"}"#.to_string(),
-        format!(r#"{{"title":"t","attachments":[{}]}}"#, vec![r#"{"name":"x","base64":"QQ=="}"#; 4].join(",")),
+        format!(r#"{{"title":"t","attachments":[{}]}}"#, [r#"{"name":"x","base64":"QQ=="}"#; 4].join(",")),
     ] {
         assert_eq!(over_unix(&sock, "POST", "/v1/send", &bad).code, 400, "{bad}");
     }

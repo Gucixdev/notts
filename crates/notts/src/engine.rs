@@ -97,14 +97,20 @@ fn jstr(s: &str) -> String {
 impl Report {
     /// The frozen JSON shape (key order is fixed, see the golden test).
     pub fn to_json(&self) -> String {
-        let rs: Vec<String> = self.results.iter().map(|r| format!(
+        let rs: Vec<String> = self
+            .results
+            .iter()
+            .map(|r| {
+                format!(
                     "{{\"name\":{},\"status\":{},\"detail\":{},\"delivered_as\":{},\"parts\":{}}}",
                     jstr(&r.name),
                     jstr(r.status.as_str()),
                     jstr(&r.detail),
                     r.delivered_as.map_or("null".to_string(), jstr),
                     r.parts
-                )).collect();
+                )
+            })
+            .collect();
         format!(
             "{{\"notts_version\":{},\"contract\":{},\"exit_code\":{},\"disposition\":{},\"reason\":{},\"key\":{},\"results\":[{}]}}",
             jstr(VERSION),
@@ -209,12 +215,20 @@ pub struct Notts {
 }
 
 pub fn default_state_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state"))).unwrap_or_else(|| PathBuf::from("."));
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("."));
     base.join("notts")
 }
 
 pub fn default_config_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))).unwrap_or_else(|| PathBuf::from("."));
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
     base.join("notts/notts.conf")
 }
 
@@ -286,15 +300,19 @@ impl Notts {
 
     /// `(name, kind, Ok | reason it is not configured)`; never a secret.
     pub fn channel_status(&self) -> Vec<(String, String, Result<(), String>)> {
-        self.built
-            .iter()
-            .zip(&self.cfg.channels)
-            .map(|(b, s)| (b.name.clone(), s.kind.clone(), b.chan.as_ref().map(|_| ()).map_err(|e| self.masker.mask(e))))
-            .collect()
+        self.built.iter().zip(&self.cfg.channels).map(|(b, s)| (b.name.clone(), s.kind.clone(), b.chan.as_ref().map(|_| ()).map_err(|e| self.masker.mask(e)))).collect()
     }
 
     fn log(&self, now: u64, decision: &str, m: &Message, key: &str, reason: &str) {
-        self.history.append(&HEntry { at: now, decision: decision.into(), app: m.app.clone(), severity: m.severity.as_str().into(), key: key.into(), reason: self.masker.mask(reason), title: m.title.clone() });
+        self.history.append(&HEntry {
+            at: now,
+            decision: decision.into(),
+            app: m.app.clone(),
+            severity: m.severity.as_str().into(),
+            key: key.into(),
+            reason: self.masker.mask(reason),
+            title: m.title.clone(),
+        });
     }
 
     // ---- sending -------------------------------------------------------------------------
@@ -332,7 +350,10 @@ impl Notts {
                 // never lose a message because the state is unusable: send it plainly
                 let channels = o.to.clone().unwrap_or_else(|| self.cfg.select(&msg));
                 let quiet = self.cfg.quiet_holds(msg.severity, lm);
-                (policy::Decision { outcome: Outcome::Send { msg: msg.clone(), channels, quiet }, reason: "sent".into(), notice: None }, Some(format!("flood-control state unusable ({:?}); sent without grouping", e.kind())))
+                (
+                    policy::Decision { outcome: Outcome::Send { msg: msg.clone(), channels, quiet }, reason: "sent".into(), notice: None },
+                    Some(format!("flood-control state unusable ({:?}); sent without grouping", e.kind())),
+                )
             }
         };
         let mut reason = dec.reason.clone();
@@ -342,7 +363,10 @@ impl Notts {
         let mut attach_note = String::new();
         let (mut results, disposition, selected): (Vec<ChannelResult>, Disposition, Vec<String>) = match dec.outcome {
             Outcome::Grouped { channels, count } => {
-                let r = channels.iter().map(|c| ChannelResult { delivered_as: None, parts: 0, name: c.clone(), status: Status::Deduped, detail: format!("grouped: repeat {count} counted, not sent") }).collect();
+                let r = channels
+                    .iter()
+                    .map(|c| ChannelResult { delivered_as: None, parts: 0, name: c.clone(), status: Status::Deduped, detail: format!("grouped: repeat {count} counted, not sent") })
+                    .collect();
                 (r, Disposition::Grouped, channels)
             }
             Outcome::Held { channels } => {
@@ -379,7 +403,13 @@ impl Notts {
         for b in &self.built {
             match results.iter().position(|r| r.name == b.name) {
                 Some(i) => full.push(results.remove(i)),
-                None => full.push(ChannelResult { delivered_as: None, parts: 0, name: b.name.clone(), status: Status::Skipped, detail: if selected.is_empty() { reason.clone() } else { "not selected by rules".into() } }),
+                None => full.push(ChannelResult {
+                    delivered_as: None,
+                    parts: 0,
+                    name: b.name.clone(),
+                    status: Status::Skipped,
+                    detail: if selected.is_empty() { reason.clone() } else { "not selected by rules".into() },
+                }),
             }
         }
         full.append(&mut results); // unknown names from --to
@@ -462,7 +492,11 @@ impl Notts {
                 Err((SendError::Retryable { detail, .. }, n)) => {
                     result.status = Status::Queued;
                     result.delivered_as = None;
-                    result.detail = if total > 1 { format!("{detail} after {n} attempt(s) at delivery {}/{total}; {sent} sent, {} queued in outbox", i + 1, total - i) } else { format!("{detail} after {n} attempt(s); queued in outbox") };
+                    result.detail = if total > 1 {
+                        format!("{detail} after {n} attempt(s) at delivery {}/{total}; {sent} sent, {} queued in outbox", i + 1, total - i)
+                    } else {
+                        format!("{detail} after {n} attempt(s); queued in outbox")
+                    };
                     return Run { result, rest: plan.parts[i..].to_vec(), total };
                 }
             }
@@ -702,9 +736,8 @@ pub struct FlushReport {
 
 impl FlushReport {
     pub fn exit_code(&self) -> i32 {
-        if self.remaining == 0 {
-            0
-        } else if self.delivered > 0 {
+        // done, or at least progress; only "nothing went out and something waits" is code 3
+        if self.remaining == 0 || self.delivered > 0 {
             0
         } else {
             3

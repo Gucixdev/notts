@@ -210,17 +210,16 @@ fn cmd_send(n: &Notts, mut a: Args) -> Result<i32, String> {
     match (body, body_file) {
         (Some(b), _) => m = m.body(b),
         (None, Some(f)) => {
-            let buf;
-            if f == "-" {
-                buf = read_stdin()?;
+            let buf = if f == "-" {
+                read_stdin()?
             } else {
                 let p = notts::secret::expand_tilde(&f);
                 let meta = std::fs::metadata(&p).map_err(|e| format!("cannot read --body-file {f} ({:?})", e.kind()))?;
                 if !meta.is_file() || meta.len() > MAX_STDIN {
                     return Err(format!("--body-file {f} must be a regular file of at most {MAX_STDIN} bytes"));
                 }
-                buf = std::fs::read(&p).map_err(|e| format!("cannot read --body-file {f} ({:?})", e.kind()))?;
-            }
+                std::fs::read(&p).map_err(|e| format!("cannot read --body-file {f} ({:?})", e.kind()))?
+            };
             m = m.body_bytes(&buf);
         }
         (None, None) if !std::io::stdin().is_terminal() => {
@@ -311,14 +310,27 @@ fn cmd_log(n: &Notts, mut a: Args) -> Result<i32, String> {
         None => 0,
         Some(s) => {
             let secs = parse_duration(&s).map_err(|e| format!("--since: {e}"))?;
-            { use notts::Clock; notts::SystemClock.unix() }.saturating_sub(secs)
+            {
+                use notts::Clock;
+                notts::SystemClock.unix()
+            }
+            .saturating_sub(secs)
         }
     };
     for e in n.history() {
         if e.at < cutoff || app.as_ref().is_some_and(|x| e.app.to_ascii_lowercase() != *x) || (grouped && e.decision != "grouped") {
             continue;
         }
-        println!("{} {:<10} {:<12} {:<5} {} [{}]{}", notts::clock::format_local(e.at), e.decision, if e.app.is_empty() { "-" } else { &e.app }, e.severity, e.title, e.key, if e.reason.is_empty() { String::new() } else { format!(" {}", e.reason) });
+        println!(
+            "{} {:<10} {:<12} {:<5} {} [{}]{}",
+            notts::clock::format_local(e.at),
+            e.decision,
+            if e.app.is_empty() { "-" } else { &e.app },
+            e.severity,
+            e.title,
+            e.key,
+            if e.reason.is_empty() { String::new() } else { format!(" {}", e.reason) }
+        );
     }
     Ok(0)
 }
@@ -422,4 +434,3 @@ fn cmd_serve(n: Notts, mut a: Args) -> Result<i32, String> {
     eprintln!("notts serve: stopped, outbox holds {}", f.remaining);
     Ok(0)
 }
-

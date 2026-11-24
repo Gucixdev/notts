@@ -30,7 +30,16 @@ pub fn build(o: &Opts) -> Result<Box<dyn Channel>, String> {
 }
 
 pub fn vars<'a>(m: &'a Message, text: &'a str, attachment: &'a str) -> Vec<(&'static str, &'a str)> {
-    vec![("attachment", attachment), ("app", &m.app), ("title", &m.title), ("body", &m.body), ("text", text), ("severity", m.severity.as_str()), ("link", m.link.as_deref().unwrap_or("")), ("id", &m.id)]
+    vec![
+        ("attachment", attachment),
+        ("app", &m.app),
+        ("title", &m.title),
+        ("body", &m.body),
+        ("text", text),
+        ("severity", m.severity.as_str()),
+        ("link", m.link.as_deref().unwrap_or("")),
+        ("id", &m.id),
+    ]
 }
 
 impl Webhook {

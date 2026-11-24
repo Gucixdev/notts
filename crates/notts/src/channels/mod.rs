@@ -75,7 +75,9 @@ fn allowed(kind: &str) -> &'static [&'static str] {
         "matrix" => &["homeserver", "room", "room_file", "token_file", "token_env"],
         "ntfy" => &["server", "topic", "topic_file", "topic_env", "token_file", "token_env", "user", "pass_file", "pass_env"],
         "webhook" => &["url", "url_file", "url_env", "method", "content_type", "body", "bearer_file", "bearer_env", "user", "pass_file", "pass_env", "header"],
-        "sms" => &["url", "url_file", "url_env", "method", "content_type", "body", "to", "to_file", "to_env", "segment", "segments", "bearer_file", "bearer_env", "user", "pass_file", "pass_env", "header"],
+        "sms" => {
+            &["url", "url_file", "url_env", "method", "content_type", "body", "to", "to_file", "to_env", "segment", "segments", "bearer_file", "bearer_env", "user", "pass_file", "pass_env", "header"]
+        }
         "email" => &["host", "port", "security", "user", "pass_file", "pass_env", "from", "to", "insecure_auth"],
         "desktop" => &["cmd"],
         _ => &[],
@@ -246,7 +248,9 @@ impl Multipart {
         self
     }
     pub fn file(mut self, name: &str, filename: &str, data: &[u8]) -> Self {
-        self.buf.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {}\r\n\r\n", self.boundary, content_type_of(filename)).as_bytes());
+        self.buf.extend_from_slice(
+            format!("--{}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {}\r\n\r\n", self.boundary, content_type_of(filename)).as_bytes(),
+        );
         self.buf.extend_from_slice(data);
         self.buf.extend_from_slice(b"\r\n");
         self

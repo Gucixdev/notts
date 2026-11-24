@@ -84,7 +84,11 @@ impl Channel for Ntfy {
         Some(Capacity { limit: LIMIT_BYTES, max_parts: 10 })
     }
     fn cost(&self, m: &Message) -> usize {
-        if m.body.is_empty() { m.title.len() } else { m.body.len() }
+        if m.body.is_empty() {
+            m.title.len()
+        } else {
+            m.body.len()
+        }
     }
     fn files(&self) -> Option<FileCaps> {
         Some(FileCaps { max_bytes: 8 * 1024 * 1024, with_text: true })

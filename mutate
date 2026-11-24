@@ -1,0 +1,27 @@
+#!/bin/sh
+# mutate FILE OLD NEW: replace the exact text OLD with NEW in FILE, run the tests, print which ones
+# failed, then restore FILE (byte for byte) and touch it. Exit 0 when at least one test caught it.
+# Needs python3 and a TMPDIR/CARGO_TARGET_DIR on a disk. Do not run two at once.
+set -eu
+[ $# -eq 3 ] || { echo "usage: mutate FILE OLD NEW" >&2; exit 2; }
+file=$1 old=$2 new=$3
+cd "$(dirname "$0")"
+backup=$(mktemp "${TMPDIR:-/var/tmp}/mutate.XXXXXX")
+cp -p "$file" "$backup"
+restore() { cp -p "$backup" "$file"; touch "$file"; }
+trap restore EXIT INT TERM
+python3 - "$file" "$old" "$new" <<'PY'
+import sys
+p, old, new = sys.argv[1:4]
+s = open(p, encoding="utf-8").read()
+if s.count(old) != 1:
+    sys.exit(f"mutate: OLD must occur exactly once in {p}, found {s.count(old)}")
+open(p, "w", encoding="utf-8").write(s.replace(old, new))
+PY
+log=$(mktemp "${TMPDIR:-/var/tmp}/mutate-log.XXXXXX")
+cargo test --offline --no-fail-fast >"$log" 2>&1 || true
+if grep -q '^error' "$log"; then echo "mutate: the mutant does not compile:"; grep '^error' -A5 "$log" | head -20; exit 3; fi
+failed=$(grep -E '^test .* FAILED$' "$log" | sed 's/^test //; s/ \.\.\. FAILED$//')
+if [ -n "$failed" ]; then echo "CAUGHT by:"; echo "$failed" | sed 's/^/  /'; else echo "SURVIVED: no test failed"; fi
+mv "$log" "${TMPDIR:-/var/tmp}/mutate-last.log"
+[ -n "$failed" ]

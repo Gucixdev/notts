@@ -1,0 +1,11 @@
+#!/bin/sh
+# Format, lint and test notts. No arguments. Set NOTTS_ONLINE=1 to let cargo use the network.
+# Test scratch files go to $TMPDIR; on this machine /tmp is RAM, so point it at a disk first.
+set -eu
+cd "$(dirname "$0")"
+off=--offline
+[ "${NOTTS_ONLINE:-}" = 1 ] && off=
+cargo fmt --check
+cargo clippy $off --all-targets -- -D warnings
+cargo test $off
+echo "check: ok"

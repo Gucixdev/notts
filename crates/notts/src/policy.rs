@@ -26,10 +26,21 @@ pub struct Input<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// Deliver now (or park in the outbox when `quiet`). The message already carries any "(xN since ...)" and state text.
-    Send { msg: Message, channels: Vec<String>, quiet: bool },
-    Grouped { channels: Vec<String>, count: u64 },
-    Held { channels: Vec<String> },
-    Suppressed { channels: Vec<String> },
+    Send {
+        msg: Message,
+        channels: Vec<String>,
+        quiet: bool,
+    },
+    Grouped {
+        channels: Vec<String>,
+        count: u64,
+    },
+    Held {
+        channels: Vec<String>,
+    },
+    Suppressed {
+        channels: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

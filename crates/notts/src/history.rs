@@ -61,7 +61,15 @@ impl History {
                 if f.len() != 7 {
                     return None;
                 }
-                Some(Entry { at: f[0].parse().ok()?, decision: unescape_field(f[1]), app: unescape_field(f[2]), severity: unescape_field(f[3]), key: unescape_field(f[4]), reason: unescape_field(f[5]), title: unescape_field(f[6]) })
+                Some(Entry {
+                    at: f[0].parse().ok()?,
+                    decision: unescape_field(f[1]),
+                    app: unescape_field(f[2]),
+                    severity: unescape_field(f[3]),
+                    key: unescape_field(f[4]),
+                    reason: unescape_field(f[5]),
+                    title: unescape_field(f[6]),
+                })
             })
             .collect()
     }

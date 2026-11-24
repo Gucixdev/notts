@@ -84,7 +84,7 @@ fn a_clock_that_jumps_backwards_does_not_wedge_grouping_or_flood_state() {
     let m = Message::new("t").app("a");
     assert_eq!(n.send(&m, &SendOptions::new()).disposition.as_str(), "sent");
     clk.set_unix(1_795_600_000 - 7200); // two hours back
-    // the old group window is in the "future": the message must go out again, not be grouped for 2 h
+                                        // the old group window is in the "future": the message must go out again, not be grouped for 2 h
     assert_eq!(n.send(&m, &SendOptions::new()).disposition.as_str(), "sent");
     // a flood cool-down started "in the future" ends within one cool-down of now
     for i in 0..10 {
@@ -369,7 +369,7 @@ fn outbox_entries_round_trip_awkward_text_and_old_v1_lines_load() {
     let d = tmpdir("obxrt");
     let ob = Outbox::new(&d);
     let e = entry("id\twith tab", "ch");
-    ob.append(&[e.clone()]).unwrap();
+    ob.append(std::slice::from_ref(&e)).unwrap();
     assert_eq!(ob.load().0, vec![e]);
     // a v1 line (no attachment column) from an older build
     std::fs::write(ob.file(), "v1\tid1\tch\t5\tfail\tapp\ttag\ttitle\tbody\t\twhy\tend\n").unwrap();

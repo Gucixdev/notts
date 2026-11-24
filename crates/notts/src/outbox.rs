@@ -50,7 +50,13 @@ impl Entry {
             _ => return None,
         };
         let _ = v2;
-        let mut msg = Message::new(unescape_field(f[7])).body(unescape_field(f[8])).app(unescape_field(f[5])).tag(unescape_field(f[6])).severity(Severity::parse(f[4])?).link(unescape_field(f[9])).with_id(unescape_field(f[1]));
+        let mut msg = Message::new(unescape_field(f[7]))
+            .body(unescape_field(f[8]))
+            .app(unescape_field(f[5]))
+            .tag(unescape_field(f[6]))
+            .severity(Severity::parse(f[4])?)
+            .link(unescape_field(f[9]))
+            .with_id(unescape_field(f[1]));
         msg.attachments = decode_atts(&atts)?;
         Some(Entry { msg, channel: unescape_field(f[2]), created: f[3].parse().ok()?, reason: unescape_field(f[10]) })
     }

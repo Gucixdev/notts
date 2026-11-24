@@ -603,7 +603,16 @@ mod tests {
         assert_eq!((d.severities, d.lines), (vec![Severity::Info], 5));
         assert_eq!(c.flood, FloodCfg { max_per_minute: 5, cooldown_secs: 120 });
         assert_eq!(Config::parse("flood off\n").unwrap().flood.max_per_minute, 0);
-        for bad in ["digest\n", "digest every=30m at=08:00\n", "digest every=30s\n", "digest at=24:00\n", "digest every=1h severities=fail\n", "digest every=1h\ndigest every=2h\n", "digest every=1h to=ghost\n", "flood max=x\n"] {
+        for bad in [
+            "digest\n",
+            "digest every=30m at=08:00\n",
+            "digest every=30s\n",
+            "digest at=24:00\n",
+            "digest every=1h severities=fail\n",
+            "digest every=1h\ndigest every=2h\n",
+            "digest every=1h to=ghost\n",
+            "flood max=x\n",
+        ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
     }

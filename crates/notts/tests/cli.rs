@@ -152,7 +152,31 @@ fn attach_flags_pair_names_and_enforce_limits() {
     let (a, b) = (d.join("raport.md"), d.join("second.txt"));
     std::fs::write(&a, "# report\n").unwrap();
     std::fs::write(&b, "two").unwrap();
-    let o = run(&d, &c, &["send", "--app", "judged", "--key", "judged-audit", "--state", "fail", "--title", "Audit", "--body-file", "-", "--attach", a.to_str().unwrap(), "--attach-name", "audit-2026-11-24.md", "--attach", b.to_str().unwrap(), "--json"], Some(b"summary"));
+    let o = run(
+        &d,
+        &c,
+        &[
+            "send",
+            "--app",
+            "judged",
+            "--key",
+            "judged-audit",
+            "--state",
+            "fail",
+            "--title",
+            "Audit",
+            "--body-file",
+            "-",
+            "--attach",
+            a.to_str().unwrap(),
+            "--attach-name",
+            "audit-2026-11-24.md",
+            "--attach",
+            b.to_str().unwrap(),
+            "--json",
+        ],
+        Some(b"summary"),
+    );
     assert_eq!(o.status.code(), Some(0), "{}{}", out(&o), err(&o));
     let at = mock.requests()[0].json()["attachments"].clone();
     assert_eq!((at[0]["name"].as_str(), at[0]["text"].as_str()), (Some("audit-2026-11-24.md"), Some("# report\n")));

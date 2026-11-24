@@ -212,8 +212,7 @@ mod tests {
 
     #[test]
     fn round_trips_every_line_kind() {
-        let mut s = State::default();
-        s.last_digest = Some(77);
+        let mut s = State { last_digest: Some(77), ..State::default() };
         s.groups.insert(1, Group { label: "Dysk\tpełny".into(), last_sent: 5, held: 2, first_held: 4 });
         s.states.insert(2, KeyState { state: Severity::Fail, since: 9, label: "k".into() });
         s.pending.insert(3, Pending { app: "judged".into(), severity: Severity::Warn, count: 4, first: 1, last: 2, channels: vec!["a".into(), "b".into()], title: "t\nx".into() });

@@ -45,7 +45,7 @@ impl Telegram {
 
     /// `sendDocument`: the file with the title as its caption (plain text, 1024 chars at most).
     pub fn document_request(&self, m: &Message, a: &crate::message::Attachment) -> Request {
-        let caption = crate::text::truncate(&format!("{} {}", m.severity.emoji(), m.title).trim().to_string(), 1000, Unit::Utf16);
+        let caption = crate::text::truncate(format!("{} {}", m.severity.emoji(), m.title).trim(), 1000, Unit::Utf16);
         let (ct, body) = Multipart::new(&m.id).field("chat_id", self.chat.expose()).field("caption", &caption).file("document", &a.name, &a.data).finish();
         Request::new("POST", format!("{}/bot{}/sendDocument", self.api, self.token.expose())).header("Content-Type", ct).body(body)
     }

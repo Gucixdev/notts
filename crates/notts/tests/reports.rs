@@ -15,7 +15,7 @@ fn report_msg() -> Message {
     Message::new("Audit finished").body("2 findings, 1 new").severity(Severity::Warn).app("judged").attach(Attachment::new("audit-2026-11-24.md", REPORT.as_bytes().to_vec()))
 }
 
-fn find<'a>(hay: &'a [u8], needle: &[u8]) -> Option<usize> {
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
@@ -81,7 +81,10 @@ fn matrix_uploads_the_media_then_posts_an_m_file_event() {
     assert_eq!(q[2].method, "PUT");
     assert!(q[2].path.ends_with("/send/m.room.message/notts-m1.f-mx-file"), "{}", q[2].path);
     let j = q[2].json();
-    assert_eq!((j["msgtype"].as_str(), j["url"].as_str(), j["body"].as_str(), j["filename"].as_str()), (Some("m.file"), Some("mxc://example.org/AbCd"), Some("audit-2026-11-24.md"), Some("audit-2026-11-24.md")));
+    assert_eq!(
+        (j["msgtype"].as_str(), j["url"].as_str(), j["body"].as_str(), j["filename"].as_str()),
+        (Some("m.file"), Some("mxc://example.org/AbCd"), Some("audit-2026-11-24.md"), Some("audit-2026-11-24.md"))
+    );
     assert_eq!(j["info"]["size"], REPORT.len());
 }
 
@@ -192,7 +195,7 @@ fn a_report_that_exists_only_in_memory_is_saved_for_the_pointer() {
     let path = msg.split("full report: ").nth(1).unwrap().trim().to_string();
     assert!(path.starts_with(d.join("state").join("reports").to_str().unwrap()), "{path}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), REPORT);
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode_600(), true);
+    assert!(std::fs::metadata(&path).unwrap().permissions().mode_600());
 }
 
 trait Mode600 {
@@ -378,7 +381,10 @@ fn history_records_name_size_and_sha256_but_never_the_contents() {
     n.send(&m, &SendOptions::new());
     let raw = std::fs::read_to_string(d.join("state").join("history.log")).unwrap();
     assert!(!raw.contains(secret_in_report), "{raw}");
-    assert!(raw.contains("a.md") && raw.contains(&format!("size={}", secret_in_report.len() + 9)) && raw.contains(&notts::text::sha256_hex(format!("{secret_in_report} and more").as_bytes())), "{raw}");
+    assert!(
+        raw.contains("a.md") && raw.contains(&format!("size={}", secret_in_report.len() + 9)) && raw.contains(&notts::text::sha256_hex(format!("{secret_in_report} and more").as_bytes())),
+        "{raw}"
+    );
     assert!(!format!("{m:?}").contains(secret_in_report), "Debug never prints attachment bytes");
 }
 
