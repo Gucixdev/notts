@@ -26,6 +26,32 @@ pub fn build(o: &Opts) -> Result<Box<dyn Channel>, String> {
 }
 
 impl Ntfy {
+    /// A file is a raw `PUT` to the topic; text and title go in headers (RFC 2047 when not ASCII).
+    pub fn file_request(&self, m: &Message, a: &crate::message::Attachment) -> Request {
+        let hv = |s: &str| if s.is_ascii() && !s.contains(['\r', '\n']) { s.to_string() } else { format!("=?UTF-8?B?{}?=", crate::text::base64(s.replace(['\r', '\n'], " ").as_bytes())) };
+        let (prio, tag) = match m.severity {
+            crate::message::Severity::Fail => (5, "rotating_light"),
+            crate::message::Severity::Warn => (4, "warning"),
+            crate::message::Severity::Ok => (3, "white_check_mark"),
+            crate::message::Severity::Info => (3, "information_source"),
+        };
+        let msg = truncate(&if m.body.is_empty() { m.title.clone() } else { m.body.clone() }, LIMIT_BYTES, Unit::Bytes);
+        let mut r = Request::new("PUT", format!("{}/{}", self.server, self.topic.expose()))
+            .header("Filename", hv(&a.name))
+            .header("Message", hv(&msg))
+            .header("Priority", prio.to_string())
+            .header("Tags", tag)
+            .header("Content-Type", content_type_of(&a.name).split(';').next().unwrap_or("application/octet-stream").to_string())
+            .body(a.data.clone());
+        if !m.title.is_empty() && !m.body.is_empty() {
+            r = r.header("Title", hv(&truncate(&m.title, 250, Unit::Bytes)));
+        }
+        if let Some(l) = &m.link {
+            r = r.header("Click", hv(l));
+        }
+        self.auth.apply(r)
+    }
+
     pub fn request(&self, m: &Message) -> Request {
         use crate::message::Severity::*;
         let (prio, tag) = match m.severity {
@@ -54,11 +80,26 @@ impl Channel for Ntfy {
     fn kind(&self) -> &'static str {
         "ntfy"
     }
+    fn capacity(&self) -> Option<Capacity> {
+        Some(Capacity { limit: LIMIT_BYTES, max_parts: 10 })
+    }
+    fn cost(&self, m: &Message) -> usize {
+        if m.body.is_empty() { m.title.len() } else { m.body.len() }
+    }
+    fn files(&self) -> Option<FileCaps> {
+        Some(FileCaps { max_bytes: 8 * 1024 * 1024, with_text: true })
+    }
     fn describe(&self, m: &Message) -> String {
-        self.request(m).describe()
+        match m.attachments.first() {
+            Some(a) => self.file_request(m, a).describe(),
+            None => self.request(m).describe(),
+        }
     }
     fn deliver(&self, m: &Message, ctx: &Ctx) -> Result<(), SendError> {
-        http_deliver(&self.request(m), ctx)
+        match m.attachments.first() {
+            Some(a) => http_deliver(&self.file_request(m, a), ctx),
+            None => http_deliver(&self.request(m), ctx),
+        }
     }
     fn secrets(&self) -> Vec<String> {
         let mut v = vec![self.topic.expose().to_string()];

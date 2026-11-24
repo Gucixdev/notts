@@ -75,6 +75,10 @@ pub struct ChannelResult {
     pub status: Status,
     /// human text, never a secret
     pub detail: String,
+    /// how the message went out: `message`, `split`, `attachment`, `link` or `truncated`; `None` when nothing was delivered
+    pub delivered_as: Option<&'static str>,
+    /// text parts the message was cut into (1 = not split); 0 when nothing was planned
+    pub parts: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -93,7 +97,14 @@ fn jstr(s: &str) -> String {
 impl Report {
     /// The frozen JSON shape (key order is fixed, see the golden test).
     pub fn to_json(&self) -> String {
-        let rs: Vec<String> = self.results.iter().map(|r| format!("{{\"name\":{},\"status\":{},\"detail\":{}}}", jstr(&r.name), jstr(r.status.as_str()), jstr(&r.detail))).collect();
+        let rs: Vec<String> = self.results.iter().map(|r| format!(
+                    "{{\"name\":{},\"status\":{},\"detail\":{},\"delivered_as\":{},\"parts\":{}}}",
+                    jstr(&r.name),
+                    jstr(r.status.as_str()),
+                    jstr(&r.detail),
+                    r.delivered_as.map_or("null".to_string(), jstr),
+                    r.parts
+                )).collect();
         format!(
             "{{\"notts_version\":{},\"contract\":{},\"exit_code\":{},\"disposition\":{},\"reason\":{},\"key\":{},\"results\":[{}]}}",
             jstr(VERSION),
@@ -328,20 +339,29 @@ impl Notts {
         if let Some(f) = failed_open {
             reason = f;
         }
+        let mut attach_note = String::new();
         let (mut results, disposition, selected): (Vec<ChannelResult>, Disposition, Vec<String>) = match dec.outcome {
             Outcome::Grouped { channels, count } => {
-                let r = channels.iter().map(|c| ChannelResult { name: c.clone(), status: Status::Deduped, detail: format!("grouped: repeat {count} counted, not sent") }).collect();
+                let r = channels.iter().map(|c| ChannelResult { delivered_as: None, parts: 0, name: c.clone(), status: Status::Deduped, detail: format!("grouped: repeat {count} counted, not sent") }).collect();
                 (r, Disposition::Grouped, channels)
             }
             Outcome::Held { channels } => {
-                let r = channels.iter().map(|c| ChannelResult { name: c.clone(), status: Status::Skipped, detail: reason.clone() }).collect();
+                if !msg.attachments.is_empty() {
+                    attach_note = " (attachment not kept: digest rows carry summaries only)".into();
+                }
+                let r = channels.iter().map(|c| ChannelResult { delivered_as: None, parts: 0, name: c.clone(), status: Status::Skipped, detail: reason.clone() }).collect();
                 (r, Disposition::Held, channels)
             }
             Outcome::Suppressed { channels } => {
-                let r = channels.iter().map(|c| ChannelResult { name: c.clone(), status: Status::Skipped, detail: reason.clone() }).collect();
+                let r = channels.iter().map(|c| ChannelResult { delivered_as: None, parts: 0, name: c.clone(), status: Status::Skipped, detail: reason.clone() }).collect();
                 (r, Disposition::Suppressed, channels)
             }
-            Outcome::Send { msg: out, channels, quiet } => {
+            Outcome::Send { msg: mut out, channels, quiet } => {
+                if o.state == Some(Severity::Ok) && !out.attachments.is_empty() {
+                    // "resolved" is a short note: the old report is not sent again
+                    out.attachments.clear();
+                    attach_note = " (attachment not sent: resolved)".into();
+                }
                 let hold = force_hold.or(if quiet { Some("held: quiet hours") } else { None });
                 let r = self.deliver_to(&channels, &out, hold, o.dry_run);
                 let d = disposition_of(&r, o.dry_run);
@@ -359,12 +379,14 @@ impl Notts {
         for b in &self.built {
             match results.iter().position(|r| r.name == b.name) {
                 Some(i) => full.push(results.remove(i)),
-                None => full.push(ChannelResult { name: b.name.clone(), status: Status::Skipped, detail: if selected.is_empty() { reason.clone() } else { "not selected by rules".into() } }),
+                None => full.push(ChannelResult { delivered_as: None, parts: 0, name: b.name.clone(), status: Status::Skipped, detail: if selected.is_empty() { reason.clone() } else { "not selected by rules".into() } }),
             }
         }
         full.append(&mut results); // unknown names from --to
         if !o.dry_run {
-            self.log(now, disposition.as_str(), &msg, &label, &reason);
+            let files: Vec<String> = msg.attachments.iter().map(|a| format!("{} size={} sha256={}", a.name, a.data.len(), a.sha256())).collect();
+            let with_files = if files.is_empty() { reason.clone() } else { format!("{reason}; attached {}{attach_note}", files.join(", ")) };
+            self.log(now, disposition.as_str(), &msg, &label, &with_files);
         }
         if let (Some(n), false) = (dec.notice, o.dry_run) {
             self.send_notice(&n, now);
@@ -392,6 +414,63 @@ impl Notts {
         self.log(now, "notice", &n, &n.app, &summary.join(" "));
     }
 
+    /// Where a copy of `data` lives for "full report: <path>"; `dry` stores nothing.
+    fn saver(&self, dry: bool) -> impl Fn(&str, &[u8]) -> String + '_ {
+        move |name: &str, data: &[u8]| {
+            let dir = self.state_dir.join("reports");
+            let file = dir.join(format!("{}-{}", &crate::text::sha256_hex(data)[..10], crate::message::safe_file_name(name)));
+            if dry {
+                return file.display().to_string();
+            }
+            let write = || -> std::io::Result<()> {
+                std::fs::create_dir_all(&dir)?;
+                if !file.exists() {
+                    crate::lock::atomic_write(&file, data)?;
+                }
+                Ok(())
+            };
+            match write() {
+                Ok(()) => {
+                    prune_reports(&dir, self.cfg.settings.max_age_hours.max(24) * 3600, self.clock.unix());
+                    file.display().to_string()
+                }
+                Err(e) => format!("(not saved: {:?})", e.kind()),
+            }
+        }
+    }
+
+    /// One channel: plan (split / attach / pointer), then deliver the parts in order with retries.
+    /// A part that cannot be delivered right now is returned for the outbox together with all parts after it.
+    fn run_channel(&self, name: &str, c: &dyn Channel, msg: &Message) -> Run {
+        let save = self.saver(false);
+        let plan = crate::plan::plan(c, msg, &save);
+        let total = plan.parts.len();
+        let mut result = ChannelResult { name: name.to_string(), status: Status::Sent, detail: String::new(), delivered_as: Some(plan.how), parts: plan.text_parts.max(1) };
+        let (mut attempts, mut sent) = (0, 0usize);
+        for (i, part) in plan.parts.iter().enumerate() {
+            match self.attempt(c, part) {
+                Ok(n) => {
+                    attempts = n;
+                    sent += 1;
+                }
+                Err((SendError::Permanent(d), _)) => {
+                    result.status = Status::Failed;
+                    result.delivered_as = None;
+                    result.detail = if total > 1 { format!("{d} (permanent, not retried) at delivery {}/{total}, {sent} already sent", i + 1) } else { format!("{d} (permanent, not retried)") };
+                    return Run { result, rest: Vec::new(), total };
+                }
+                Err((SendError::Retryable { detail, .. }, n)) => {
+                    result.status = Status::Queued;
+                    result.delivered_as = None;
+                    result.detail = if total > 1 { format!("{detail} after {n} attempt(s) at delivery {}/{total}; {sent} sent, {} queued in outbox", i + 1, total - i) } else { format!("{detail} after {n} attempt(s); queued in outbox") };
+                    return Run { result, rest: plan.parts[i..].to_vec(), total };
+                }
+            }
+        }
+        result.detail = if total > 1 { format!("delivered {total} deliveries as {}", plan.how) } else { format!("delivered on attempt {attempts}") };
+        Run { result, rest: Vec::new(), total }
+    }
+
     /// Deliver to the named channels, one thread each; a failure in one never blocks the others.
     /// `hold` = park in the outbox instead of sending (quiet hours).
     fn deliver_to(&self, names: &[String], msg: &Message, hold: Option<&str>, dry: bool) -> Vec<ChannelResult> {
@@ -399,37 +478,53 @@ impl Notts {
         let mut work: Vec<(usize, &str, &dyn Channel)> = Vec::new();
         for (i, n) in names.iter().enumerate() {
             match self.built.iter().find(|b| &b.name == n) {
-                None => out[i] = Some(ChannelResult { name: n.clone(), status: Status::NotConfigured, detail: "no such channel".into() }),
+                None => out[i] = Some(ChannelResult { delivered_as: None, parts: 0, name: n.clone(), status: Status::NotConfigured, detail: "no such channel".into() }),
                 Some(b) => match &b.chan {
-                    Err(why) => out[i] = Some(ChannelResult { name: n.clone(), status: Status::NotConfigured, detail: why.clone() }),
-                    Ok(c) if dry => out[i] = Some(ChannelResult { name: n.clone(), status: Status::Skipped, detail: format!("dry-run: would send via {}", self.masker.mask(&c.describe(msg))) }),
+                    Err(why) => out[i] = Some(ChannelResult { delivered_as: None, parts: 0, name: n.clone(), status: Status::NotConfigured, detail: why.clone() }),
+                    Ok(c) if dry => {
+                        let save = self.saver(true);
+                        let p = crate::plan::plan(c.as_ref(), msg, &save);
+                        let first = p.parts.iter().find(|m| m.id.ends_with(crate::plan::FILE_PART).not()).unwrap_or(&p.parts[0]);
+                        out[i] = Some(ChannelResult {
+                            delivered_as: Some(p.how),
+                            parts: p.text_parts.max(1),
+                            name: n.clone(),
+                            status: Status::Skipped,
+                            detail: format!("dry-run: would send via {} [{} delivery(ies), as {}]", self.masker.mask(&c.describe(first)), p.parts.len(), p.how),
+                        });
+                    }
                     Ok(c) => work.push((i, n, c.as_ref())),
                 },
             }
         }
         let mut to_queue: Vec<OEntry> = Vec::new();
         let now = self.clock.unix();
-        let queue = |name: &str, why: &str| OEntry { msg: msg.clone(), channel: name.to_string(), created: now, reason: why.to_string() };
+        let queue = |name: &str, m: &Message, why: &str| OEntry { msg: m.clone(), channel: name.to_string(), created: now, reason: why.to_string() };
         if let Some(why) = hold {
             for (i, n, _) in &work {
-                to_queue.push(queue(n, why));
-                out[*i] = Some(ChannelResult { name: n.to_string(), status: Status::Queued, detail: why.into() });
+                to_queue.push(queue(n, msg, why));
+                out[*i] = Some(ChannelResult { delivered_as: None, parts: 0, name: n.to_string(), status: Status::Queued, detail: why.into() });
             }
         } else if !work.is_empty() {
-            let outcomes: Vec<(usize, Result<u32, (SendError, u32)>)> = std::thread::scope(|s| {
-                let handles: Vec<_> = work.iter().map(|(i, _, c)| (*i, s.spawn(move || self.attempt(*c, msg)))).collect();
-                handles.into_iter().map(|(i, h)| (i, h.join().unwrap_or_else(|_| Err((SendError::Permanent("internal error in channel".into()), 0))))).collect()
+            let runs: Vec<(usize, Run)> = std::thread::scope(|s| {
+                let handles: Vec<_> = work.iter().map(|(i, n, c)| (*i, s.spawn(move || self.run_channel(n, *c, msg)))).collect();
+                handles
+                    .into_iter()
+                    .map(|(i, h)| {
+                        let run = h.join().unwrap_or_else(|_| Run {
+                            result: ChannelResult { delivered_as: None, parts: 0, name: names[i].clone(), status: Status::Failed, detail: "internal error in channel".into() },
+                            rest: Vec::new(),
+                            total: 0,
+                        });
+                        (i, run)
+                    })
+                    .collect()
             });
-            for (i, res) in outcomes {
-                let name = names[i].clone();
-                out[i] = Some(match res {
-                    Ok(n) => ChannelResult { name, status: Status::Sent, detail: format!("delivered on attempt {n}") },
-                    Err((SendError::Permanent(d), _)) => ChannelResult { name, status: Status::Failed, detail: format!("{d} (permanent, not retried)") },
-                    Err((SendError::Retryable { detail, .. }, n)) => {
-                        to_queue.push(queue(&name, &detail));
-                        ChannelResult { name, status: Status::Queued, detail: format!("{detail} after {n} attempt(s); queued in outbox") }
-                    }
-                });
+            for (i, run) in runs {
+                for m in &run.rest {
+                    to_queue.push(queue(&names[i], m, &run.result.detail));
+                }
+                out[i] = Some(run.result);
             }
         }
         if !to_queue.is_empty() {
@@ -543,27 +638,56 @@ impl Notts {
                 kept += 1;
                 continue;
             };
-            match self.attempt(c.as_ref(), &e.msg) {
-                Ok(_) => {
+            let run = self.run_channel(&e.channel, c.as_ref(), &e.msg);
+            match run.result.status {
+                Status::Sent => {
                     delivered += 1;
                     done.push(e.key());
                     self.log(now, "flushed", &e.msg, &e.msg.title, &format!("{} delivered from outbox", e.channel));
                 }
-                Err((SendError::Permanent(d), _)) => {
-                    notes.push(format!("{}: {} (permanent), moved to outbox.dead", e.channel, self.masker.mask(&d)));
-                    done.push(e.key());
-                    dead.push(e);
-                }
-                Err((SendError::Retryable { detail, .. }, _)) => {
-                    notes.push(format!("{}: {} (will retry)", e.channel, self.masker.mask(&detail)));
+                Status::Queued => {
+                    notes.push(format!("{}: {} (will retry)", e.channel, self.masker.mask(&run.result.detail)));
                     down.push(e.channel.clone());
                     kept += 1;
+                    if run.rest.len() < run.total {
+                        // some deliveries went out: the entry is replaced by what is still missing
+                        let rest: Vec<OEntry> = run.rest.iter().map(|m| OEntry { msg: m.clone(), channel: e.channel.clone(), created: e.created, reason: e.reason.clone() }).collect();
+                        if self.outbox.append(&rest).is_ok() {
+                            done.push(e.key());
+                        }
+                    }
+                }
+                _ => {
+                    notes.push(format!("{}: {}, moved to outbox.dead", e.channel, self.masker.mask(&run.result.detail)));
+                    done.push(e.key());
+                    dead.push(e);
                 }
             }
         }
         let _ = self.outbox.bury(&dead);
         let _ = self.outbox.remove(&done);
         FlushReport { delivered, remaining: kept, buried: dead.len(), torn_lines: torn, notes }
+    }
+}
+
+/// The outcome of one channel's delivery of one message.
+struct Run {
+    result: ChannelResult,
+    /// deliveries not made yet (the failed one and everything after it), for the outbox
+    rest: Vec<Message>,
+    total: usize,
+}
+
+use std::ops::Not;
+
+/// Saved report copies older than `max_age` seconds are removed; best effort.
+fn prune_reports(dir: &Path, max_age: u64, now: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).is_some_and(|t| now.saturating_sub(t.as_secs()) > max_age);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
 }
 

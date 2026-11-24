@@ -4,8 +4,8 @@
 //! complete file. Both happen under the same advisory lock.
 
 use crate::lock::{atomic_write, atomic_write_with, FileLock};
-use crate::message::{Message, Severity};
-use crate::text::{escape_field, unescape_field};
+use crate::message::{Attachment, Message, Severity};
+use crate::text::{base64, base64_decode, escape_field, unescape_field};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ impl Entry {
     fn to_line(&self) -> String {
         let m = &self.msg;
         format!(
-            "v1\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "v2\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             escape_field(&m.id),
             escape_field(&self.channel),
             self.created,
@@ -37,18 +37,48 @@ impl Entry {
             escape_field(&m.body),
             escape_field(m.link.as_deref().unwrap_or("")),
             escape_field(&self.reason),
+            encode_atts(&m.attachments),
             "end"
         )
     }
 
     fn from_line(l: &str) -> Option<Entry> {
         let f: Vec<&str> = l.split('\t').collect();
-        if f.len() != 12 || f[0] != "v1" || f[11] != "end" {
-            return None;
-        }
-        let msg = Message::new(unescape_field(f[7])).body(unescape_field(f[8])).app(unescape_field(f[5])).tag(unescape_field(f[6])).severity(Severity::parse(f[4])?).link(unescape_field(f[9])).with_id(unescape_field(f[1]));
+        let (atts, v2) = match (f.first().copied(), f.len()) {
+            (Some("v1"), 12) if f[11] == "end" => (String::new(), false),
+            (Some("v2"), 13) if f[12] == "end" => (f[11].to_string(), true),
+            _ => return None,
+        };
+        let _ = v2;
+        let mut msg = Message::new(unescape_field(f[7])).body(unescape_field(f[8])).app(unescape_field(f[5])).tag(unescape_field(f[6])).severity(Severity::parse(f[4])?).link(unescape_field(f[9])).with_id(unescape_field(f[1]));
+        msg.attachments = decode_atts(&atts)?;
         Some(Entry { msg, channel: unescape_field(f[2]), created: f[3].parse().ok()?, reason: unescape_field(f[10]) })
     }
+}
+
+/// `name.path.data` in base64 each, items joined by `,`; `-` when there are none.
+fn encode_atts(a: &[Attachment]) -> String {
+    if a.is_empty() {
+        return "-".into();
+    }
+    a.iter().map(|x| format!("{}.{}.{}", base64(x.name.as_bytes()), base64(x.path.as_deref().unwrap_or("").as_bytes()), base64(&x.data))).collect::<Vec<_>>().join(",")
+}
+
+fn decode_atts(s: &str) -> Option<Vec<Attachment>> {
+    if s == "-" || s.is_empty() {
+        return Some(vec![]);
+    }
+    let mut v = Vec::new();
+    for item in s.split(',') {
+        let p: Vec<&str> = item.split('.').collect();
+        if p.len() != 3 {
+            return None;
+        }
+        let name = String::from_utf8(base64_decode(p[0])?).ok()?;
+        let path = String::from_utf8(base64_decode(p[1])?).ok()?;
+        v.push(Attachment { name, data: base64_decode(p[2])?, path: if path.is_empty() { None } else { Some(path) } });
+    }
+    Some(v)
 }
 
 pub struct Outbox {

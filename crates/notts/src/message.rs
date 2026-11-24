@@ -45,6 +45,68 @@ impl Severity {
     }
 }
 
+/// Largest attachment accepted anywhere (CLI, serve, outbox).
+pub const MAX_ATTACHMENT: usize = 8 * 1024 * 1024;
+pub const MAX_ATTACHMENTS: usize = 3;
+
+/// A file that travels with a message (the full report next to its summary).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Attachment {
+    /// File name shown to the recipient: no directories, no control characters.
+    pub name: String,
+    pub data: Vec<u8>,
+    /// Where the file lives on this machine, when it came from a path; used for "full report: <path>".
+    pub path: Option<String>,
+}
+
+impl std::fmt::Debug for Attachment {
+    /// Never prints the contents.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Attachment({}, {} bytes)", self.name, self.data.len())
+    }
+}
+
+/// `report.md`-style file name from anything: last path component, no control chars or quotes.
+pub fn safe_file_name(s: &str) -> String {
+    let base = s.rsplit(['/', '\\']).next().unwrap_or("");
+    let n: String = base.chars().filter(|c| !c.is_control() && !matches!(c, '"' | ';' | ':' | '*' | '?' | '<' | '>' | '|')).collect();
+    let n = n.trim().trim_start_matches('.').to_string();
+    let n: String = n.chars().take(100).collect();
+    if n.is_empty() {
+        "attachment.txt".to_string()
+    } else {
+        n
+    }
+}
+
+impl Attachment {
+    pub fn new(name: &str, data: Vec<u8>) -> Attachment {
+        Attachment { name: safe_file_name(name), data, path: None }
+    }
+    /// Read a regular file; `name` overrides the file name shown to the recipient.
+    pub fn from_path(path: &str, name: Option<&str>) -> Result<Attachment, String> {
+        let p = crate::secret::expand_tilde(path);
+        let meta = std::fs::metadata(&p).map_err(|e| format!("cannot read attachment {path} ({:?})", e.kind()))?;
+        if !meta.is_file() {
+            return Err(format!("attachment {path} is not a regular file"));
+        }
+        if meta.len() as usize > MAX_ATTACHMENT {
+            return Err(format!("attachment {path} is {} bytes, the limit is {MAX_ATTACHMENT}", meta.len()));
+        }
+        let data = std::fs::read(&p).map_err(|e| format!("cannot read attachment {path} ({:?})", e.kind()))?;
+        let shown = name.map(String::from).unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let abs = std::fs::canonicalize(&p).unwrap_or(p);
+        Ok(Attachment { name: safe_file_name(&shown), data, path: Some(abs.to_string_lossy().into_owned()) })
+    }
+    pub fn sha256(&self) -> String {
+        crate::text::sha256_hex(&self.data)
+    }
+    /// The contents as text when they are valid UTF-8.
+    pub fn text(&self) -> Option<&str> {
+        std::str::from_utf8(&self.data).ok()
+    }
+}
+
 /// One notification. Build with [`Message::new`] and the chained setters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -56,6 +118,7 @@ pub struct Message {
     pub body: String,
     pub severity: Severity,
     pub link: Option<String>,
+    pub attachments: Vec<Attachment>,
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -69,7 +132,7 @@ fn fresh_id() -> String {
 
 impl Message {
     pub fn new(title: impl Into<String>) -> Message {
-        Message { id: fresh_id(), app: String::new(), tag: String::new(), title: title.into(), body: String::new(), severity: Severity::Info, link: None }
+        Message { id: fresh_id(), app: String::new(), tag: String::new(), title: title.into(), body: String::new(), severity: Severity::Info, link: None, attachments: Vec::new() }
     }
     pub fn body(mut self, v: impl Into<String>) -> Self {
         self.body = v.into();
@@ -97,6 +160,11 @@ impl Message {
         self.link = if v.is_empty() { None } else { Some(v) };
         self
     }
+    /// Add a file (at most [`MAX_ATTACHMENTS`] are kept, each at most [`MAX_ATTACHMENT`] bytes; the engine reports the rest).
+    pub fn attach(mut self, a: Attachment) -> Self {
+        self.attachments.push(a);
+        self
+    }
     /// Rebuild a message that was stored (outbox): keeps the id so retries are idempotent.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
@@ -116,6 +184,11 @@ impl Message {
             m.body = cut;
         }
         m.link = m.link.map(|l| one_line(&l)).filter(|l| !l.is_empty());
+        m.attachments.retain(|a| a.data.len() <= MAX_ATTACHMENT);
+        m.attachments.truncate(MAX_ATTACHMENTS);
+        for a in &mut m.attachments {
+            a.name = safe_file_name(&a.name);
+        }
         m
     }
 

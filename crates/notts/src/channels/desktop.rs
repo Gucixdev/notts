@@ -37,6 +37,13 @@ impl Channel for Desktop {
     fn kind(&self) -> &'static str {
         "desktop"
     }
+    /// Notification daemons cut long bodies themselves: keep one honest piece, point at the rest.
+    fn capacity(&self) -> Option<Capacity> {
+        Some(Capacity { limit: 2000, max_parts: 1 })
+    }
+    fn cost(&self, m: &Message) -> usize {
+        m.body.chars().count() + m.link.as_ref().map_or(0, |l| l.chars().count() + 1)
+    }
     fn describe(&self, m: &Message) -> String {
         format!("run {} -a notts ... ({} chars)", self.cmd, m.title.chars().count() + m.body.chars().count())
     }

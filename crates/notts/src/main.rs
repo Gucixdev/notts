@@ -13,9 +13,10 @@ const HELP: &str = "\
 notts: one message, every channel you enabled.
 
 usage:
-  notts [GLOBAL] send --title T [--body B | < stdin] [--app NAME] [--severity ok|warn|fail|info]
-                      [--link URL] [--tag T] [--key K] [--state ok|warn|fail] [--to ch1,ch2]
-                      [--dry-run] [--no-group] [--json]
+  notts [GLOBAL] send --title T [--body B | --body-file FILE|- | < stdin] [--app NAME]
+                      [--severity ok|warn|fail|info] [--link URL] [--tag T] [--key K]
+                      [--state ok|warn|fail] [--to ch1,ch2] [--dry-run] [--no-group] [--json]
+                      [--attach FILE [--attach-name NAME]] (up to 3, in pairs)
   notts [GLOBAL] flush                  retry the outbox
   notts [GLOBAL] status [--json]        channels (configured or why not), outbox size
   notts [GLOBAL] log [--app A] [--since 2h] [--grouped]
@@ -60,6 +61,33 @@ impl Args {
             i += 1;
         }
         Ok(found)
+    }
+    /// Every occurrence of a repeatable option, in order.
+    fn values(&mut self, name: &str) -> Result<Vec<String>, String> {
+        let mut out = Vec::new();
+        while let Some(v) = self.take_first(name)? {
+            out.push(v);
+        }
+        Ok(out)
+    }
+    fn take_first(&mut self, name: &str) -> Result<Option<String>, String> {
+        let eq = format!("{name}=");
+        for i in 0..self.rest.len() {
+            if self.rest[i] == name {
+                if i + 1 >= self.rest.len() {
+                    return Err(format!("{name} needs a value"));
+                }
+                let v = self.rest[i + 1].clone();
+                self.rest.drain(i..i + 2);
+                return Ok(Some(v));
+            }
+            if let Some(v) = self.rest[i].strip_prefix(&eq) {
+                let v = v.to_string();
+                self.rest.remove(i);
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
     }
     fn flag(&mut self, name: &str) -> bool {
         let before = self.rest.len();
@@ -147,6 +175,9 @@ const MAX_STDIN: u64 = 4 * 1024 * 1024;
 fn cmd_send(n: &Notts, mut a: Args) -> Result<i32, String> {
     let title = a.value("--title")?;
     let body = a.value("--body")?;
+    let body_file = a.value("--body-file")?;
+    let attach = a.values("--attach")?;
+    let attach_names = a.values("--attach-name")?;
     let app = a.value("--app")?;
     let sev = a.value("--severity")?;
     let link = a.value("--link")?;
@@ -163,14 +194,40 @@ fn cmd_send(n: &Notts, mut a: Args) -> Result<i32, String> {
         Some(s) => Severity::parse(&s).ok_or("--severity must be ok, warn, fail or info")?,
     };
     let mut m = Message::new(title.clone().unwrap_or_default()).severity(severity).app(app.unwrap_or_default()).tag(tag.unwrap_or_default());
-    match body {
-        Some(b) => m = m.body(b),
-        None if !std::io::stdin().is_terminal() => {
+    if body.is_some() && body_file.is_some() {
+        return Err("give --body or --body-file, not both".into());
+    }
+    match (body, body_file) {
+        (Some(b), _) => m = m.body(b),
+        (None, Some(f)) => {
+            let mut buf = Vec::new();
+            if f == "-" {
+                std::io::stdin().take(MAX_STDIN).read_to_end(&mut buf).map_err(|e| format!("cannot read stdin ({:?})", e.kind()))?;
+            } else {
+                let p = notts::secret::expand_tilde(&f);
+                let meta = std::fs::metadata(&p).map_err(|e| format!("cannot read --body-file {f} ({:?})", e.kind()))?;
+                if !meta.is_file() || meta.len() > MAX_STDIN {
+                    return Err(format!("--body-file {f} must be a regular file of at most {MAX_STDIN} bytes"));
+                }
+                buf = std::fs::read(&p).map_err(|e| format!("cannot read --body-file {f} ({:?})", e.kind()))?;
+            }
+            m = m.body_bytes(&buf);
+        }
+        (None, None) if !std::io::stdin().is_terminal() => {
             let mut buf = Vec::new();
             std::io::stdin().take(MAX_STDIN).read_to_end(&mut buf).map_err(|e| format!("cannot read stdin ({:?})", e.kind()))?;
             m = m.body_bytes(&buf);
         }
-        None => {}
+        (None, None) => {}
+    }
+    if attach.len() > notts::MAX_ATTACHMENTS {
+        return Err(format!("at most {} --attach files", notts::MAX_ATTACHMENTS));
+    }
+    if attach_names.len() > attach.len() {
+        return Err("--attach-name needs a matching --attach".into());
+    }
+    for (i, path) in attach.iter().enumerate() {
+        m = m.attach(notts::Attachment::from_path(path, attach_names.get(i).map(|s| s.as_str()))?);
     }
     if let Some(l) = link {
         m = m.link(l);

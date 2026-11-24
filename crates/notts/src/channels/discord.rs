@@ -40,6 +40,10 @@ pub fn defuse_mentions(s: &str) -> String {
 
 impl Discord {
     pub fn render(&self, m: &Message) -> String {
+        self.render_with(m, LIMIT)
+    }
+
+    fn render_with(&self, m: &Message, limit: usize) -> String {
         let mut s = String::new();
         s.push_str(m.severity.emoji());
         if !m.title.is_empty() {
@@ -49,7 +53,7 @@ impl Discord {
         let fixed = Unit::Utf16.cost(&s) + Unit::Utf16.cost(&tail) + 1;
         if !m.body.is_empty() {
             s.push('\n');
-            s.push_str(&fit(&defuse_mentions(&m.body), LIMIT.saturating_sub(fixed), Unit::Utf16, no_esc));
+            s.push_str(&fit(&defuse_mentions(&m.body), limit.saturating_sub(fixed), Unit::Utf16, no_esc));
         }
         s.push_str(&tail);
         s
@@ -60,6 +64,12 @@ impl Discord {
         if let Some(u) = &self.username {
             p["username"] = serde_json::Value::String(u.clone());
         }
+        if let Some(a) = m.attachments.first() {
+            // multipart: payload_json carries the text, files[0] the report
+            p["attachments"] = serde_json::json!([{"id": 0, "filename": a.name}]);
+            let (ct, body) = Multipart::new(&m.id).json_field("payload_json", &p.to_string()).file("files[0]", &a.name, &a.data).finish();
+            return Request::new("POST", self.url.expose()).header("Content-Type", ct).body(body);
+        }
         Request::new("POST", self.url.expose()).header("Content-Type", "application/json").body(p.to_string())
     }
 }
@@ -67,6 +77,15 @@ impl Discord {
 impl Channel for Discord {
     fn kind(&self) -> &'static str {
         "discord"
+    }
+    fn capacity(&self) -> Option<Capacity> {
+        Some(Capacity { limit: LIMIT, max_parts: 10 })
+    }
+    fn cost(&self, m: &Message) -> usize {
+        Unit::Utf16.cost(&self.render_with(m, 1 << 30))
+    }
+    fn files(&self) -> Option<FileCaps> {
+        Some(FileCaps { max_bytes: 8 * 1024 * 1024, with_text: true })
     }
     fn describe(&self, m: &Message) -> String {
         self.request(m).describe()

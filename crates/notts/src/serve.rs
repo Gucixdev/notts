@@ -42,7 +42,7 @@ pub struct ServeOpts {
 
 impl Default for ServeOpts {
     fn default() -> Self {
-        ServeOpts { socket: None, listen: None, token: None, queue: 64, workers: 4, rate_per_min: 120, max_body: 256 * 1024, max_conns: 128, flush_every: Duration::from_secs(300) }
+        ServeOpts { socket: None, listen: None, token: None, queue: 64, workers: 4, rate_per_min: 120, max_body: 12 * 1024 * 1024, max_conns: 128, flush_every: Duration::from_secs(300) }
     }
 }
 
@@ -445,7 +445,7 @@ fn handle(s: &Arc<Shared>, c: &mut Conn) {
             None,
         ),
         ("GET", "/v1/outbox") => (200, format!("{{\"notts_version\":{},\"contract\":{},\"count\":{}}}", jq(VERSION), CONTRACT, s.notts.outbox_len()), None),
-        ("POST", "/v1/send") => send(s, &req.body),
+        ("POST", "/v1/send") => send(s, &req.body, !c.is_tcp()),
         (_, "/v1/health") | (_, "/v1/outbox") | (_, "/v1/send") => (405, err_json("method not allowed"), None),
         _ => (404, err_json("not found"), None),
     };
@@ -469,7 +469,8 @@ fn flag(v: &serde_json::Value, k: &str) -> Result<bool, String> {
 }
 
 /// JSON request body -> message and options (the same fields as the CLI flags).
-pub fn parse_send(body: &[u8]) -> Result<(Message, SendOptions), String> {
+/// `allow_paths`: attachments by local path are only honoured for clients on the unix socket (same user).
+pub fn parse_send(body: &[u8], allow_paths: bool) -> Result<(Message, SendOptions), String> {
     let v: serde_json::Value = serde_json::from_slice(body).map_err(|_| "body is not valid JSON".to_string())?;
     if !v.is_object() {
         return Err("body must be a JSON object".into());
@@ -486,6 +487,35 @@ pub fn parse_send(body: &[u8]) -> Result<(Message, SendOptions), String> {
     let mut m = Message::new(title).body(text).severity(sev).app(field(&v, "app")?.unwrap_or("")).tag(field(&v, "tag")?.unwrap_or(""));
     if let Some(l) = field(&v, "link")? {
         m = m.link(l);
+    }
+    match v.get("attachments") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(list)) => {
+            if list.len() > crate::MAX_ATTACHMENTS {
+                return Err(format!("at most {} attachments", crate::MAX_ATTACHMENTS));
+            }
+            for a in list {
+                let name = a.get("name").and_then(|x| x.as_str());
+                let att = match (a.get("path").and_then(|x| x.as_str()), a.get("base64").and_then(|x| x.as_str())) {
+                    (Some(p), None) => {
+                        if !allow_paths {
+                            return Err("attachments by `path` are only accepted on the unix socket; send name + base64 over TCP".into());
+                        }
+                        crate::Attachment::from_path(p, name)?
+                    }
+                    (None, Some(b)) => {
+                        let data = crate::text::base64_decode(b).ok_or("attachment `base64` is not valid base64")?;
+                        if data.len() > crate::MAX_ATTACHMENT {
+                            return Err(format!("attachment is {} bytes, the limit is {}", data.len(), crate::MAX_ATTACHMENT));
+                        }
+                        crate::Attachment::new(name.ok_or("an attachment with `base64` needs a `name`")?, data)
+                    }
+                    _ => return Err("each attachment needs exactly one of `path` or `base64` (with `name`)".into()),
+                };
+                m = m.attach(att);
+            }
+        }
+        Some(_) => return Err("`attachments` must be a list".into()),
     }
     let mut o = SendOptions::new().dry_run(flag(&v, "dry_run")?).no_group(flag(&v, "no_group")?);
     if let Some(k) = field(&v, "key")? {
@@ -508,8 +538,8 @@ pub fn parse_send(body: &[u8]) -> Result<(Message, SendOptions), String> {
     Ok((m, o))
 }
 
-fn send(s: &Arc<Shared>, body: &[u8]) -> (u16, String, Option<u64>) {
-    let (msg, opts) = match parse_send(body) {
+fn send(s: &Arc<Shared>, body: &[u8], allow_paths: bool) -> (u16, String, Option<u64>) {
+    let (msg, opts) = match parse_send(body, allow_paths) {
         Ok(x) => x,
         Err(e) => return (400, err_json(&e), None),
     };
@@ -661,11 +691,11 @@ mod tests {
 
     #[test]
     fn send_body_parsing() {
-        let (m, o) = parse_send(br#"{"app":"judged","severity":"warn","title":"T","body":"B","link":"http://x","key":"k","state":"fail","to":["a"],"dry_run":true}"#).unwrap();
+        let (m, o) = parse_send(br#"{"app":"judged","severity":"warn","title":"T","body":"B","link":"http://x","key":"k","state":"fail","to":["a"],"dry_run":true}"#, false).unwrap();
         assert_eq!((m.app.as_str(), m.severity), ("judged", Severity::Warn));
         assert!(o.dry_run && o.key.as_deref() == Some("k") && o.state == Some(Severity::Fail) && o.to == Some(vec!["a".to_string()]));
         for bad in ["[]", "nope", r#"{"title":1}"#, r#"{}"#, r#"{"title":"t","severity":"loud"}"#, r#"{"title":"t","state":"info"}"#, r#"{"title":"t","to":"a"}"#, r#"{"title":"t","dry_run":"yes"}"#] {
-            assert!(parse_send(bad.as_bytes()).is_err(), "{bad}");
+            assert!(parse_send(bad.as_bytes(), false).is_err(), "{bad}");
         }
     }
 }

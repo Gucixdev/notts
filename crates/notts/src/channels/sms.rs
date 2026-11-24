@@ -14,15 +14,20 @@ pub struct Sms {
     content_type: String,
     template: String,
     to: Secret,
-    max: usize,
+    segment: usize,
+    segments: usize,
     auth: Auth,
     header: Option<(String, String)>,
 }
 
 pub fn build(o: &Opts) -> Result<Box<dyn Channel>, String> {
-    let max = match o.get("max") {
-        None => 480,
-        Some(v) => v.parse::<usize>().ok().filter(|n| (20..=1600).contains(n)).ok_or("max must be a number between 20 and 1600")?,
+    let segment = match o.get("segment") {
+        None => 160,
+        Some(v) => v.parse::<usize>().ok().filter(|n| (40..=1600).contains(n)).ok_or("segment must be a number between 40 and 1600")?,
+    };
+    let segments = match o.get("segments") {
+        None => 3,
+        Some(v) => v.parse::<usize>().ok().filter(|n| (1..=10).contains(n)).ok_or("segments must be a number between 1 and 10")?,
     };
     Ok(Box::new(Sms {
         url: o.url("url")?,
@@ -30,7 +35,8 @@ pub fn build(o: &Opts) -> Result<Box<dyn Channel>, String> {
         content_type: o.get("content_type").unwrap_or("application/json").to_string(),
         template: o.need("body")?.to_string(),
         to: o.value("to")?,
-        max,
+        segment,
+        segments,
         auth: o.auth()?,
         header: o.extra_header()?,
     }))
@@ -43,13 +49,13 @@ impl Sms {
             (false, true) => m.title.clone(),
             _ => m.body.replace('\n', " "),
         };
-        truncate(&t, self.max, Unit::Chars)
+        truncate(&t, self.segment, Unit::Chars)
     }
 
     pub fn request(&self, m: &Message) -> Request {
         let text = self.sms_text(m);
         let full = m.text();
-        let mut v = super::webhook::vars(m, &full);
+        let mut v = super::webhook::vars(m, &full, "");
         v.retain(|(k, _)| *k != "text");
         v.push(("text", &text));
         v.push(("to", self.to.expose()));
@@ -65,6 +71,17 @@ impl Sms {
 impl Channel for Sms {
     fn kind(&self) -> &'static str {
         "sms"
+    }
+    fn capacity(&self) -> Option<Capacity> {
+        Some(Capacity { limit: self.segment, max_parts: self.segments })
+    }
+    fn cost(&self, m: &Message) -> usize {
+        let t = match (m.title.is_empty(), m.body.is_empty()) {
+            (false, false) => format!("{}: {}", m.title, m.body.replace('\n', " ")),
+            (false, true) => m.title.clone(),
+            _ => m.body.replace('\n', " "),
+        };
+        t.chars().count()
     }
     fn describe(&self, m: &Message) -> String {
         self.request(m).describe()

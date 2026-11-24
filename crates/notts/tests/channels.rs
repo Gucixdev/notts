@@ -36,23 +36,32 @@ fn telegram_exact_request_and_escaping() {
 }
 
 #[test]
-fn telegram_limit_is_4096_with_visible_marker() {
+fn telegram_long_body_is_split_at_4096_never_inside_an_entity() {
     let mock = Mock::start(vec![]);
     let d = tmpdir("tglim");
     let tok = secret_file(&d, "tok", "1:T");
     let conf = conf_fast(&format!("channel tg type=telegram token_file={tok} chat=1 api={}", mock.url()));
-    // every '<' becomes "&lt;" (4 units), so a naive cut on the raw text would overflow
+    // every '<' becomes "&lt;" (4 units): a naive cut on the raw text would overflow or split an entity
     let body = "<".repeat(5000);
     let r = notts(&conf, &d, clock()).send(&Message::new("t").body(body), &SendOptions::new());
     assert_eq!(r.exit_code, 0);
-    let t = mock.requests()[0].json()["text"].as_str().unwrap().to_string();
-    assert!(t.encode_utf16().count() <= 4096, "{}", t.encode_utf16().count());
-    assert!(t.contains("[...truncated]"));
-    assert!(!t.contains("&l\n") && !t.ends_with("&l"), "never cut inside an entity");
+    assert_eq!((r.results[0].delivered_as, r.results[0].parts), (Some("split"), 5));
+    let q = mock.requests();
+    assert_eq!(q.len(), 5);
+    let mut lts = 0;
+    for (i, req) in q.iter().enumerate() {
+        let t = req.json()["text"].as_str().unwrap().to_string();
+        assert!(t.encode_utf16().count() <= 4096, "part {i}: {}", t.encode_utf16().count());
+        assert!(t.contains(&format!("({}/5)", i + 1)), "numbered in order: {t}");
+        assert!(!t.contains("[...truncated]"));
+        lts += t.matches("&lt;").count();
+        assert_eq!(t.matches('&').count(), t.matches("&lt;").count() + t.matches("&amp;").count(), "no half entity: {t}");
+    }
+    assert_eq!(lts, 5000, "every character arrived exactly once");
 }
 
 #[test]
-fn discord_strips_mentions_and_limits_to_2000() {
+fn discord_strips_mentions_and_splits_at_2000() {
     let mock = Mock::start(vec![]);
     let d = tmpdir("dc");
     let hook = secret_file(&d, "hook", &format!("{}/api/webhooks/42/WEBHOOKSECRET\n", mock.url()));
@@ -67,7 +76,8 @@ fn discord_strips_mentions_and_limits_to_2000() {
     assert!(!c.contains("@everyone") && !c.contains("@here") && !c.to_lowercase().contains("@everyone"), "{c}");
     assert!(c.contains("@\u{200b}everyone") && c.contains("@\u{200b}here"));
     assert!(c.encode_utf16().count() <= 2000);
-    assert!(c.contains("[...truncated]"));
+    assert_eq!(mock.count(), 2, "3000 chars do not fit one 2000-char message: split, not cut");
+    assert!(mock.requests()[1].json()["content"].as_str().unwrap().contains("(2/2)"));
     assert_eq!(j["allowed_mentions"]["parse"], serde_json::json!([]));
     assert_eq!(j["username"], "notts-bot");
     assert!(!r.to_json().contains("WEBHOOKSECRET"));
@@ -149,22 +159,28 @@ fn webhook_default_body_and_bearer() {
 }
 
 #[test]
-fn sms_gateway_template_and_phone_number_masked() {
+fn sms_gateway_template_segments_capped_and_phone_number_masked() {
     let mock = Mock::start(vec![]);
     let d = tmpdir("sms");
     let to = secret_file(&d, "to", "+48123456789\n");
     let key = secret_file(&d, "key", "GATEWAYKEY");
-    let conf = conf_fast(&format!(r#"channel sms type=sms url={}/send to_file={to} bearer_file={key} max=40 body="{{\"to\":\"{{to}}\",\"msg\":\"{{text}}\"}}""#, mock.url()));
+    let conf = conf_fast(&format!(r#"channel sms type=sms url={}/send to_file={to} bearer_file={key} segment=40 segments=3 body="{{\"to\":\"{{to}}\",\"msg\":\"{{text}}\"}}""#, mock.url()));
     let n = notts(&conf, &d, clock());
     let r = n.send(&Message::new("Disk").body("full ".repeat(30)).severity(Severity::Fail), &SendOptions::new());
     assert_eq!(r.exit_code, 0, "{r:?}");
-    let q = &mock.requests()[0];
-    assert_eq!(q.path, "/send");
-    assert_eq!(q.header("authorization"), Some("Bearer GATEWAYKEY"));
-    let j = q.json();
-    assert_eq!(j["to"], "+48123456789");
-    assert!(j["msg"].as_str().unwrap().chars().count() <= 40);
-    assert!(j["msg"].as_str().unwrap().starts_with("Disk: full"));
+    assert_eq!((r.results[0].delivered_as, r.results[0].parts), (Some("truncated"), 3), "capped at 3 segments, said so");
+    let q = mock.requests();
+    assert_eq!(q.len(), 3);
+    assert_eq!(q[0].path, "/send");
+    assert_eq!(q[0].header("authorization"), Some("Bearer GATEWAYKEY"));
+    for (i, req) in q.iter().enumerate() {
+        let j = req.json();
+        assert_eq!(j["to"], "+48123456789");
+        let msg = j["msg"].as_str().unwrap();
+        assert!(msg.chars().count() <= 40, "{msg}");
+        assert!(msg.starts_with(&format!("Disk ({}/3): ", i + 1)), "{msg}");
+    }
+    assert!(q[2].json()["msg"].as_str().unwrap().contains("/reports/") || q[2].json()["msg"].as_str().unwrap().contains("truncated"), "the last segment points at the saved text");
     let out = format!("{}{:?}", r.to_json(), r);
     assert!(!out.contains("48123456789") && !out.contains("GATEWAYKEY"), "{out}");
 }

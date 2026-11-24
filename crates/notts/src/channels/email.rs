@@ -86,11 +86,10 @@ impl Email {
             text.push_str(&format!("\n\n{l}"));
         }
         let text = truncate(&text, LIMIT, Unit::Chars).replace("\r\n", "\n").replace('\n', "\r\n");
-        let b64 = base64(text.as_bytes());
-        let wrapped: Vec<&str> = b64.as_bytes().chunks(76).map(|c| std::str::from_utf8(c).unwrap_or("")).collect();
+        let wrap = |b: &[u8]| -> String { base64(b).as_bytes().chunks(76).map(|c| std::str::from_utf8(c).unwrap_or("")).collect::<Vec<_>>().join("\r\n") };
         let subject = format!("[{}] {}", m.severity.as_str(), if m.title.is_empty() { "notification" } else { &m.title });
-        format!(
-            "From: {}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\nMessage-ID: <{}.{}@notts>\r\nX-Notts-App: {}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+        let mut head = format!(
+            "From: {}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\nMessage-ID: <{}.{}@notts>\r\nX-Notts-App: {}\r\nMIME-Version: 1.0\r\n",
             self.from,
             self.to.join(", "),
             rfc2047(&subject),
@@ -98,8 +97,24 @@ impl Email {
             m.id,
             now_unix,
             m.app.replace(['\r', '\n'], " "),
-            wrapped.join("\r\n")
-        )
+        );
+        if m.attachments.is_empty() {
+            return format!("{head}Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n", wrap(text.as_bytes()));
+        }
+        let boundary = format!("notts-{}", &crate::text::sha256_hex(m.id.as_bytes())[..20]);
+        head.push_str(&format!("Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\nThis is a multi-part message in MIME format.\r\n"));
+        head.push_str(&format!("--{boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n", wrap(text.as_bytes())));
+        for a in &m.attachments {
+            let ascii: String = a.name.chars().map(|c| if c.is_ascii() { c } else { '_' }).collect();
+            head.push_str(&format!(
+                "--{boundary}\r\nContent-Type: {}; name=\"{ascii}\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"{ascii}\"; filename*=UTF-8''{}\r\n\r\n{}\r\n",
+                content_type_of(&a.name).split(';').next().unwrap_or("application/octet-stream"),
+                crate::text::pct_encode(&a.name),
+                wrap(&a.data)
+            ));
+        }
+        head.push_str(&format!("--{boundary}--\r\n"));
+        head
     }
 
     fn connect(&self, timeout: Duration) -> Result<TcpStream, SendError> {
@@ -184,6 +199,15 @@ fn is_loopback(host: &str) -> bool {
 impl Channel for Email {
     fn kind(&self) -> &'static str {
         "email"
+    }
+    fn capacity(&self) -> Option<Capacity> {
+        Some(Capacity { limit: LIMIT, max_parts: 5 })
+    }
+    fn cost(&self, m: &Message) -> usize {
+        m.body.chars().count() + m.link.as_ref().map_or(0, |l| l.chars().count() + 2)
+    }
+    fn files(&self) -> Option<FileCaps> {
+        Some(FileCaps { max_bytes: 8 * 1024 * 1024, with_text: true })
     }
     fn describe(&self, m: &Message) -> String {
         format!("SMTP {}:{} ({:?}) mail to {} recipient(s), subject {} chars", self.host, self.port, self.security, self.to.len(), m.title.chars().count())

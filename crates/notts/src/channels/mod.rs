@@ -26,7 +26,37 @@ pub struct Ctx<'a> {
     pub timeout: Duration,
 }
 
+/// How much text one delivery carries: the engine splits longer messages on line boundaries.
+#[derive(Clone, Copy, Debug)]
+pub struct Capacity {
+    /// in the channel's own unit (see `Channel::cost`)
+    pub limit: usize,
+    /// more parts than this are cut, visibly, with a pointer to the saved full text
+    pub max_parts: usize,
+}
+
+/// A channel that can carry files.
+#[derive(Clone, Copy, Debug)]
+pub struct FileCaps {
+    pub max_bytes: usize,
+    /// true: the file travels in the same delivery as the text (the engine attaches it to the last
+    /// text part); false: it is a delivery of its own (sent after the text)
+    pub with_text: bool,
+}
+
 pub trait Channel: Send + Sync {
+    /// Text capacity, `None` = unlimited (webhook).
+    fn capacity(&self) -> Option<Capacity> {
+        None
+    }
+    /// Size of `m` as this channel would send it, uncut, in the unit of `capacity().limit`.
+    fn cost(&self, _m: &Message) -> usize {
+        0
+    }
+    /// `Some` when this channel delivers attachments natively.
+    fn files(&self) -> Option<FileCaps> {
+        None
+    }
     fn kind(&self) -> &'static str;
     /// One line for `--dry-run`: what would be sent. Masked by the caller.
     fn describe(&self, m: &Message) -> String;
@@ -45,7 +75,7 @@ fn allowed(kind: &str) -> &'static [&'static str] {
         "matrix" => &["homeserver", "room", "room_file", "token_file", "token_env"],
         "ntfy" => &["server", "topic", "topic_file", "topic_env", "token_file", "token_env", "user", "pass_file", "pass_env"],
         "webhook" => &["url", "url_file", "url_env", "method", "content_type", "body", "bearer_file", "bearer_env", "user", "pass_file", "pass_env", "header"],
-        "sms" => &["url", "url_file", "url_env", "method", "content_type", "body", "to", "to_file", "to_env", "max", "bearer_file", "bearer_env", "user", "pass_file", "pass_env", "header"],
+        "sms" => &["url", "url_file", "url_env", "method", "content_type", "body", "to", "to_file", "to_env", "segment", "segments", "bearer_file", "bearer_env", "user", "pass_file", "pass_env", "header"],
         "email" => &["host", "port", "security", "user", "pass_file", "pass_env", "from", "to", "insecure_auth"],
         "desktop" => &["cmd"],
         _ => &[],
@@ -195,6 +225,52 @@ pub fn check_url(u: &str) -> Result<(), String> {
         return Err("url contains whitespace".into());
     }
     Ok(())
+}
+
+/// `multipart/form-data` body builder.
+pub struct Multipart {
+    boundary: String,
+    buf: Vec<u8>,
+}
+
+impl Multipart {
+    pub fn new(seed: &str) -> Multipart {
+        Multipart { boundary: format!("notts{}", &crate::text::sha256_hex(seed.as_bytes())[..24]), buf: Vec::new() }
+    }
+    pub fn field(mut self, name: &str, value: &str) -> Self {
+        self.buf.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n", self.boundary).as_bytes());
+        self
+    }
+    pub fn json_field(mut self, name: &str, value: &str) -> Self {
+        self.buf.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: application/json\r\n\r\n{value}\r\n", self.boundary).as_bytes());
+        self
+    }
+    pub fn file(mut self, name: &str, filename: &str, data: &[u8]) -> Self {
+        self.buf.extend_from_slice(format!("--{}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {}\r\n\r\n", self.boundary, content_type_of(filename)).as_bytes());
+        self.buf.extend_from_slice(data);
+        self.buf.extend_from_slice(b"\r\n");
+        self
+    }
+    /// `(Content-Type header value, body)`
+    pub fn finish(mut self) -> (String, Vec<u8>) {
+        self.buf.extend_from_slice(format!("--{}--\r\n", self.boundary).as_bytes());
+        (format!("multipart/form-data; boundary={}", self.boundary), self.buf)
+    }
+}
+
+/// Good-enough media type from the extension; recipients render by it.
+pub fn content_type_of(name: &str) -> &'static str {
+    match name.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref() {
+        Some("md") | Some("markdown") => "text/markdown; charset=utf-8",
+        Some("txt") | Some("log") => "text/plain; charset=utf-8",
+        Some("json") => "application/json",
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("csv") => "text/csv; charset=utf-8",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        _ => "application/octet-stream",
+    }
 }
 
 /// Shared by the channels that are one HTTP request.

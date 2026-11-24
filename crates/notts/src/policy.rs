@@ -120,7 +120,7 @@ pub fn decide(st: &mut State, i: &Input) -> Decision {
         routing = new;
         match st.states.get(&kh).cloned() {
             Some(prev) if prev.state == new => {
-                return mk(Outcome::Suppressed { channels: vec![] }, format!("state unchanged ({})", new.as_str()), notice);
+                return mk(Outcome::Suppressed { channels: vec![] }, format!("unchanged: state still {}", new.as_str()), notice);
             }
             Some(prev) => {
                 changed = true;
