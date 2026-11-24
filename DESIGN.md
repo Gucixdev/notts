@@ -65,5 +65,5 @@ no file.
 1. One static-friendly binary with a small dependency tree either way; Go would be as easy to ship.
 2. The owner's other tools (finedesktop, progit, lazyUI) are Rust: the library can be a path dependency, no FFI.
 3. Pattern-heavy state machines (`Disposition`, `Status`) with exhaustive matches catch missing cases at compile time.
-4. No GC and no runtime means a short-lived CLI starts in about a millisecond; matters because every script shells out.
+4. No GC and no runtime means a short-lived CLI starts fast, which matters because every script shells out.
 5. Cost: slower compile and a heavier TLS stack than Go's `crypto/tls`; accepted.

@@ -20,8 +20,8 @@ open(p, "w", encoding="utf-8").write(s.replace(old, new))
 PY
 log=$(mktemp "${TMPDIR:-/var/tmp}/mutate-log.XXXXXX")
 cargo test --offline --no-fail-fast >"$log" 2>&1 || true
-if grep -q '^error' "$log"; then echo "mutate: the mutant does not compile:"; grep '^error' -A5 "$log" | head -20; exit 3; fi
+if ! grep -q "^test result" "$log"; then echo "mutate: the mutant does not compile"; head -20 "$log"; exit 3; fi
 failed=$(grep -E '^test .* FAILED$' "$log" | sed 's/^test //; s/ \.\.\. FAILED$//')
 if [ -n "$failed" ]; then echo "CAUGHT by:"; echo "$failed" | sed 's/^/  /'; else echo "SURVIVED: no test failed"; fi
-mv "$log" "${TMPDIR:-/var/tmp}/mutate-last.log"
+cp "$log" "${TMPDIR:-/var/tmp}/mutate-last.log"
 [ -n "$failed" ]
