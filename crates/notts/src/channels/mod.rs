@@ -155,7 +155,10 @@ impl Opts<'_> {
                 return Ok(Secret::new(v));
             }
         }
-        self.secret(base).map_err(|_| format!("missing option `{base}` (or `{base}_file`)"))
+        if self.get(&format!("{base}_file")).is_none() && self.get(&format!("{base}_env")).is_none() {
+            return Err(format!("missing option `{base}` (or `{base}_file`)"));
+        }
+        self.secret(base)
     }
     /// Optional auth: bearer token, or user + password.
     pub fn auth(&self) -> Result<Auth, String> {

@@ -285,3 +285,14 @@ fn secrets_never_reach_stdout_or_stderr() {
     assert!(all.contains("not-configured") && all.contains("chmod 600"), "{all}");
     assert!(!all.contains("SUPER-SECRET"));
 }
+
+#[test]
+fn an_unreadable_secret_file_is_named_not_reported_as_a_missing_option() {
+    let d = tmpdir("cli-unreadable");
+    let missing = d.join("no-such-secret");
+    let c = format!("channel hook type=webhook url_file={}\nchannel ntfy2 type=ntfy topic_file={}\n", missing.display(), missing.display());
+    let o = run(&d, &c, &["status"], None);
+    let s = out(&o);
+    assert_eq!(s.matches("unreadable").count(), 2, "{s}");
+    assert!(!s.contains("missing option"), "{s}");
+}
