@@ -1,0 +1,19 @@
+# ~/.config/systemd/user/notts.service
+# systemctl --user daemon-reload && systemctl --user enable --now notts.service
+[Unit]
+Description=notts notification transport (unix socket)
+
+[Service]
+ExecStart=%h/.local/bin/notts serve --socket %t/notts.sock
+Restart=on-failure
+RestartSec=5
+# TCP is optional and loopback only:
+#   ExecStart=%h/.local/bin/notts serve --socket %t/notts.sock --listen 127.0.0.1:7780 --token-file %h/.config/notts/serve.token
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=notts
+
+[Install]
+WantedBy=default.target

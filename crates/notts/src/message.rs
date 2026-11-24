@@ -178,7 +178,7 @@ impl Message {
         m.title = truncate(&one_line(&m.title), MAX_TITLE_CHARS, Unit::Chars);
         m.app = one_line(&m.app).chars().take(64).collect();
         m.tag = one_line(&m.tag).chars().take(64).collect();
-        m.body = clean(&m.body);
+        m.body = clean(&m.body).trim_end_matches('\n').to_string();
         if m.body.chars().count() > MAX_BODY_CHARS {
             let cut = truncate(&m.body, MAX_BODY_CHARS, Unit::Chars);
             debug_assert!(cut.ends_with(MARKER));
