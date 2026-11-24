@@ -1,0 +1,42 @@
+# notts.conf: copy to ~/.config/notts/notts.conf (or point NOTTS_CONFIG / --config at it).
+# One directive per line: `directive args key=value ...`. `#` starts a comment.
+# Secrets are NEVER written here: only the path of a mode-600 file (chmod 600) or an env var name.
+
+# Defaults. timeout is per channel and per attempt; group = repeats of one key inside this window are
+# counted instead of sent.
+set timeout=10 retries=2 backoff=1000 group=10m
+
+# ---- channels ------------------------------------------------------------------------------
+# Phone push through ntfy (the recommended phone path): install the ntfy app, subscribe to a long random topic.
+channel phone   type=ntfy     server=https://ntfy.sh topic_file=~/.secrets/notts-ntfy-topic
+# Chat
+channel telegram              token_file=~/.secrets/notts-telegram-token chat=123456789
+channel discord               webhook_file=~/.secrets/notts-discord-webhook
+channel matrix                homeserver=https://matrix.example.org room=!abc:example.org token_file=~/.secrets/notts-matrix-token
+# E-mail through your own SMTP server (security=starttls or tls; user/pass optional)
+channel mail    type=email    host=smtp.example.org port=587 security=starttls user=me@example.org pass_file=~/.secrets/notts-smtp-pass from=me@example.org to=me@example.org
+# Any HTTP endpoint; the body is a template ({title} {body} {severity} {app} {link} {text})
+channel hook    type=webhook  url_file=~/.secrets/notts-webhook-url
+# SMS through a generic HTTP gateway you pay for or host yourself (segment = characters per SMS)
+# channel sms   type=sms      url_file=~/.secrets/notts-sms-url to_file=~/.secrets/notts-sms-number segment=160 segments=3 body="{\"to\":\"{to}\",\"text\":\"{text}\"}"
+# Local desktop popup (notify-send); not needed when finedesktop's on-notify hook feeds notts
+# channel desktop
+
+# ---- routing: which app / severity goes where ----------------------------------------------
+# Three apps as examples. The first matching rules are added up: a message goes to the union of their `to`.
+# judged (security audits): the phone only hears about failures and recoveries, chat also hears warnings.
+rule app=judged           min=fail to=phone,telegram
+rule app=judged           min=warn to=telegram
+# smart-optimizer (disk and cache planner): only warnings and worse, to chat.
+rule app=smart-optimizer  min=warn to=telegram
+# finedesktop (your desktop): failures to the phone and chat, the rest stays on screen.
+rule app=finedesktop      min=fail to=phone,telegram
+
+# ---- flood control -------------------------------------------------------------------------
+# Hold the quiet stuff and send ONE message every morning and evening; e-mail is where the digest goes.
+digest at=08:00,18:00 severities=info,warn lines=30 to=mail
+# One app sending more than 30 messages a minute is switched to the digest for 10 minutes,
+# and you get one notice: "app X is flooding".
+flood max=30 cooldown=10m
+# Nothing but failures between 22:00 and 07:00.
+quiet 22:00-07:00 except=fail
