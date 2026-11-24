@@ -144,10 +144,18 @@ pub fn decide(st: &mut State, i: &Input) -> Decision {
     }
 
     // 2. routing
-    let channels: Vec<String> = match i.to_override {
+    let mut channels: Vec<String> = match i.to_override {
         Some(t) => t.to_vec(),
         None => cfg.select_as(&m, routing),
     };
+    // a digest with an explicit `to=` collects its severities even when no rule routes them anywhere else
+    if channels.is_empty() && i.to_override.is_none() {
+        if let Some(d) = &cfg.digest {
+            if d.severities.contains(&routing) && !d.to.is_empty() {
+                channels = d.to.clone();
+            }
+        }
+    }
     if channels.is_empty() {
         return mk(Outcome::Suppressed { channels }, "no rule matched".into(), notice);
     }

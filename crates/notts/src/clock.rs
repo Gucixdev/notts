@@ -60,6 +60,12 @@ impl FakeClock {
             g.now += secs;
         }
     }
+    /// Jump to an absolute time, backwards too (an NTP step, a wrong RTC).
+    pub fn set_unix(&self, now: u64) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.now = now;
+        }
+    }
     pub fn slept(&self) -> Vec<Duration> {
         self.inner.lock().map(|g| g.slept.clone()).unwrap_or_default()
     }

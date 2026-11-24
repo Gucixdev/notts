@@ -19,6 +19,18 @@ pub fn tmpdir(tag: &str) -> PathBuf {
     d
 }
 
+/// Like `tmpdir` but on RAM when there is a tmpfs: for tests that do hundreds of fsynced state writes
+/// (an HDD makes those take minutes). The files are a few KB.
+pub fn tmpdir_ram(tag: &str) -> PathBuf {
+    let base = Path::new("/dev/shm");
+    if !base.is_dir() {
+        return tmpdir(tag);
+    }
+    let d = base.join(format!("notts-test-{}-{}-{}", std::process::id(), tag, N.fetch_add(1, Ordering::SeqCst)));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
 pub fn secret_file(dir: &Path, name: &str, content: &str) -> String {
     let p = dir.join(name);
     std::fs::write(&p, content).unwrap();
