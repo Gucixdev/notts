@@ -290,6 +290,15 @@ impl Notts {
 
     /// Take one message through flood control, routing and delivery. Never panics.
     pub fn send(&self, m: &Message, o: &SendOptions) -> Report {
+        self.send_inner(m, o, None)
+    }
+
+    /// Like `send`, but whatever would be delivered is parked in the outbox with `why` (server shutdown).
+    pub fn send_held(&self, m: &Message, o: &SendOptions, why: &str) -> Report {
+        self.send_inner(m, o, Some(why))
+    }
+
+    fn send_inner(&self, m: &Message, o: &SendOptions, force_hold: Option<&str>) -> Report {
         let msg = m.normalized();
         let now = self.clock.unix();
         let lm = self.clock.local_minutes();
@@ -333,7 +342,8 @@ impl Notts {
                 (r, Disposition::Suppressed, channels)
             }
             Outcome::Send { msg: out, channels, quiet } => {
-                let r = self.deliver_to(&channels, &out, if quiet { Some("held: quiet hours") } else { None }, o.dry_run);
+                let hold = force_hold.or(if quiet { Some("held: quiet hours") } else { None });
+                let r = self.deliver_to(&channels, &out, hold, o.dry_run);
                 let d = disposition_of(&r, o.dry_run);
                 if d == Disposition::Suppressed {
                     reason = "dry-run".into();

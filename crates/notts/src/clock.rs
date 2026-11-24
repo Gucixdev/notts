@@ -79,3 +79,17 @@ impl Clock for FakeClock {
         }
     }
 }
+
+/// `YYYY-MM-DD HH:MM:SS` in local time.
+pub fn format_local(unix: u64) -> String {
+    let t = unix as libc::time_t;
+    // SAFETY: localtime_r fills the zeroed struct we own.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return format!("@{unix}");
+        }
+        tm
+    };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+}

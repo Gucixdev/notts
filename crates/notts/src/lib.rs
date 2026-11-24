@@ -28,6 +28,7 @@ pub mod lock;
 pub mod message;
 pub mod outbox;
 pub mod policy;
+pub mod serve;
 pub mod secret;
 pub mod state;
 pub mod text;
