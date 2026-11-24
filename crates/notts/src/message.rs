@@ -4,7 +4,8 @@ use crate::text::{fnv64, truncate, Unit, MARKER};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Cap applied to every body before any channel sees it.
-pub const MAX_BODY_CHARS: usize = 100_000;
+/// Larger bodies are cut with a visible marker; the CLI refuses input beyond its own 4 MiB cap instead of cutting it.
+pub const MAX_BODY_CHARS: usize = 2_000_000;
 pub const MAX_TITLE_CHARS: usize = 300;
 
 /// Ordered `Info < Ok < Warn < Fail`; rules use it for `min=`.

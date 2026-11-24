@@ -68,8 +68,10 @@ fn split(c: &dyn Channel, base: &Message, pointer: Option<String>, save: &dyn Fn
     if c.cost(base) <= cap.limit {
         return (vec![base.clone()], false);
     }
+    let mut shell = base.clone();
+    shell.body.clear();
     let probe = |body: &str| -> Message {
-        let mut p = base.clone();
+        let mut p = shell.clone();
         p.title = if base.title.is_empty() { "(99/99)".into() } else { format!("{} (99/99)", base.title) };
         p.body = body.to_string();
         p

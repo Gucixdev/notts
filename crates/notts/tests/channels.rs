@@ -369,8 +369,11 @@ fn invalid_utf8_empty_and_one_megabyte_bodies() {
     let r = n.send(&big, &SendOptions::new().no_group(true));
     assert_eq!(r.exit_code, 0, "{r:?}");
     let sent = mock.requests()[2].json()["body"].as_str().unwrap().to_string();
-    assert!(sent.len() < 400_000, "capped, got {}", sent.len());
-    assert!(sent.ends_with("[...truncated]"));
+    assert_eq!(sent.chars().count(), 512 * 1024, "a 1 MB body travels whole on a channel without a limit");
+    let huge = Message::new("huge").body("é".repeat(2_500_000));
+    assert_eq!(n.send(&huge, &SendOptions::new().no_group(true)).exit_code, 0);
+    let sent = mock.requests()[3].json()["body"].as_str().unwrap().to_string();
+    assert!(sent.ends_with("[...truncated]"), "beyond 2M characters the cut is visible");
 }
 
 #[test]

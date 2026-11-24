@@ -172,6 +172,16 @@ fn print_report(n: &Notts, r: &Report, json: bool) {
 
 const MAX_STDIN: u64 = 4 * 1024 * 1024;
 
+/// All of stdin; more than the cap is an error, never a silent cut.
+fn read_stdin() -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    std::io::stdin().take(MAX_STDIN + 1).read_to_end(&mut buf).map_err(|e| format!("cannot read stdin ({:?})", e.kind()))?;
+    if buf.len() as u64 > MAX_STDIN {
+        return Err(format!("stdin is larger than {MAX_STDIN} bytes; send the text as a file with --attach instead"));
+    }
+    Ok(buf)
+}
+
 fn cmd_send(n: &Notts, mut a: Args) -> Result<i32, String> {
     let title = a.value("--title")?;
     let body = a.value("--body")?;
@@ -200,9 +210,9 @@ fn cmd_send(n: &Notts, mut a: Args) -> Result<i32, String> {
     match (body, body_file) {
         (Some(b), _) => m = m.body(b),
         (None, Some(f)) => {
-            let mut buf = Vec::new();
+            let buf;
             if f == "-" {
-                std::io::stdin().take(MAX_STDIN).read_to_end(&mut buf).map_err(|e| format!("cannot read stdin ({:?})", e.kind()))?;
+                buf = read_stdin()?;
             } else {
                 let p = notts::secret::expand_tilde(&f);
                 let meta = std::fs::metadata(&p).map_err(|e| format!("cannot read --body-file {f} ({:?})", e.kind()))?;
@@ -214,8 +224,7 @@ fn cmd_send(n: &Notts, mut a: Args) -> Result<i32, String> {
             m = m.body_bytes(&buf);
         }
         (None, None) if !std::io::stdin().is_terminal() => {
-            let mut buf = Vec::new();
-            std::io::stdin().take(MAX_STDIN).read_to_end(&mut buf).map_err(|e| format!("cannot read stdin ({:?})", e.kind()))?;
+            let buf = read_stdin()?;
             m = m.body_bytes(&buf);
         }
         (None, None) => {}
